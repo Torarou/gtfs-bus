@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>GTFS Shapes Quiz</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", sans-serif; margin:0; }
+  #top { display:flex; gap:12px; padding:12px; align-items:center; background:#f7f7f7; border-bottom:1px solid #ddd; flex-wrap:wrap;}
+  #map { height:70vh; }
+  #choices { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  .btn { padding:8px 12px; border-radius:6px; background:#2b7cff; color:white; border:none; cursor:pointer; }
+  .btn:disabled { opacity:0.5; }
+  .choice { padding:10px 14px; border-radius:8px; border:1px solid #ccc; background:white; cursor:pointer; min-width:120px; text-align:center; }
+  .choice.correct { border-color:green; background:#e8f7ea; }
+  .choice.wrong { border-color:red; background:#fdecef; }
+  .small { font-size:0.9rem; color:#555; }
+</style>
+</head>
+<body>
+
+<div id="top">
+  <button id="toggleBg" class="btn">地図背景 OFF</button>
+  <button id="nextBtn" class="btn" disabled>次の問題</button>
+  <button id="revealBtn" class="btn" disabled>正解表示</button>
+  <div class="small" id="status">読み込み中...</div>
+  <div style="margin-left:auto;">スコア: <span id="score">0</span>/<span id="asked">0</span></div>
+</div>
+
+<div id="map"></div>
+
+<div style="padding:12px">
+  <div id="prompt" style="font-weight:600;">--</div>
+  <div id="choices"></div>
+</div>
+
+<!-- Libraries -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+
+<script>
+// ============ 設定 ============
+const GTFS_ZIP_PATH = "./Kyoto_City_Bus_GTFS-20251028.zip"; // 同フォルダ内
+// ==============================
+
+let map = L.map('map').setView([35.68,139.76], 12);
+const tileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  maxZoom:19, attribution:'© OpenStreetMap'
+}).addTo(map);
+
+let bgVisible = true;
+document.getElementById('toggleBg').onclick = () => {
+  bgVisible = !bgVisible;
+  if (bgVisible) { map.addLayer(tileLayer); toggleBg.textContent = "地図背景 OFF"; }
+  else { map.removeLayer(tileLayer); toggleBg.textContent = "地図背景 ON"; }
+};
+
+let shapes={}, trips=[], routes={}, stops={}, stop_times=[];
+let shapeToRoutes={}, shapeIds=[];
+let current={shape_id:null, route_id:null, polyline:null};
+let score=0, asked=0;
+const statusEl=document.getElementById('status'), scoreEl=document.getElementById('score'), askedEl=document.getElementById('asked');
+const promptEl=document.getElementById('prompt'), choicesEl=document.getElementById('choices');
+const nextBtn=document.getElementById('nextBtn'), revealBtn=document.getElementById('revealBtn');
+let movingMarker=null, animTimer=null;
+
+(async function loadGTFS(){
+  try{
+    const res = await fetch(GTFS_ZIP_PATH);
+    if(!res.ok) throw new Error("GTFS zip 読み込み失敗");
+    const buf = await res.arrayBuffer();
+    const zip = await JSZip.loadAsync(buf);
+    async function get(name){
+      const key = Object.keys(zip.files).find(k=>k.toLowerCase().endsWith(name));
+      return key ? await zip.files[key].async("string") : null;
+    }
+    parseShapes(await get("shapes.txt"));
+    parseTrips(await get("trips.txt"));
+    parseRoutes(await get("routes.txt"));
+    parseStops(await get("stops.txt"));
+    parseStopTimes(await get("stop_times.txt"));
+    buildShapeToRoutes();
+    shapeIds = Object.keys(shapes);
+    statusEl.textContent=`GTFS読込完了 shapes:${shapeIds.length}`;
+    nextBtn.disabled=false; revealBtn.disabled=false;
+  }catch(e){
+    statusEl.textContent="読み込み失敗: "+e.message;
+  }
+})();
+
+function parseShapes(txt){
+  const d=Papa.parse(txt,{header:true,skipEmptyLines:true}).data;
+  for(const r of d){
+    const sid=r.shape_id; if(!sid)continue;
+    const lat=parseFloat(r.shape_pt_lat),lng=parseFloat(r.shape_pt_lon),seq=parseInt(r.shape_pt_sequence);
+    if(!shapes[sid])shapes[sid]=[];
+    shapes[sid].push({lat,lng,seq});
+  }
+  for(const s in shapes){ shapes[s].sort((a,b)=>a.seq-b.seq); }
+}
+function parseTrips(txt){
+  const d=Papa.parse(txt,{header:true,skipEmptyLines:true}).data;
+  trips=d.filter(r=>r.trip_id);
+}
+function parseRoutes(txt){
+  const d=Papa.parse(txt,{header:true,skipEmptyLines:true}).data;
+  for(const r of d){ if(r.route_id) routes[r.route_id]=r; }
+}
+function parseStops(txt){
+  const d=Papa.parse(txt,{header:true,skipEmptyLines:true}).data;
+  for(const r of d){ if(r.stop_id) stops[r.stop_id]=r; }
+}
+function parseStopTimes(txt){
+  stop_times=Papa.parse(txt,{header:true,skipEmptyLines:true}).data;
+}
+function buildShapeToRoutes(){
+  shapeToRoutes={};
+  for(const t of trips){
+    if(!t.shape_id)continue;
+    if(!shapeToRoutes[t.shape_id]) shapeToRoutes[t.shape_id]=new Set();
+    shapeToRoutes[t.shape_id].add(t.route_id);
+  }
+}
+
+function makeLabel(route_id){
+  const r=routes[route_id]||{};
+  const n1=r.route_short_name||"",n2=r.route_long_name||"";
+  return (n1&&n2)?`${n1} — ${n2}`:(n1||n2||route_id);
+}
+function pickShape(){
+  const pool=shapeIds.filter(s=>shapeToRoutes[s]?.size>0);
+  return pool.length?pool[Math.floor(Math.random()*pool.length)]:shapeIds[Math.floor(Math.random()*shapeIds.length)];
+}
+function clearMap(){
+  if(current.polyline){map.removeLayer(current.polyline);}
+  if(movingMarker){ map.removeLayer(movingMarker); movingMarker=null; }
+  if(animTimer){ cancelAnimationFrame(animTimer); animTimer=null; }
+}
+
+function drawShape(id){
+  clearMap();
+  const pts=shapes[id].map(p=>[p.lat,p.lng]);
+  current.polyline=L.polyline(pts,{weight:5,color:'#0078ff'}).addTo(map);
+  map.fitBounds(L.latLngBounds(pts).pad(0.2));
+}
+
+function newQuestion(){
+  map.closePopup();
+  clearMap();
+  const sid=pickShape();
+  current.shape_id=sid;
+  drawShape(sid);
+  startAnimation(sid); // 🟢 出題時からアニメ開始
+  promptEl.textContent="この路線の route を選んでください。";
+  const corrects=Array.from(shapeToRoutes[sid]||[]);
+  const all=Object.keys(routes);
+  const wrongs=[];
+  for(let i=0;i<3;i++){const w=all[Math.floor(Math.random()*all.length)];if(!corrects.includes(w)&&w)wrongs.push(w);}
+  const opts=[...corrects.slice(0,1),...wrongs].sort(()=>Math.random()-0.5);
+  choicesEl.innerHTML="";
+  opts.forEach(rid=>{
+    const div=document.createElement("div");
+    div.className="choice"; div.textContent=makeLabel(rid);
+    div.onclick=()=>checkAnswer(div,rid,corrects);
+    choicesEl.appendChild(div);
+  });
+}
+
+function checkAnswer(btn,rid,corrects){
+  const all=choicesEl.querySelectorAll(".choice");
+  all.forEach(b=>b.style.pointerEvents="none");
+  asked++; askedEl.textContent=asked;
+  if(corrects.includes(rid)){
+    btn.classList.add("correct"); score++; scoreEl.textContent=score;
+    showExplanation(current.shape_id, rid);
+  }else{
+    btn.classList.add("wrong");
+    all.forEach(b=>{if(corrects.includes(Object.keys(routes).find(k=>makeLabel(k)===b.textContent)))b.classList.add("correct");});
+    showExplanation(current.shape_id, corrects[0]);
+  }
+}
+
+function showExplanation(shape_id,route_id){
+  const trip=trips.find(t=>t.shape_id===shape_id && t.route_id===route_id);
+  if(!trip)return;
+  const trip_id=trip.trip_id;
+  const st=stop_times.filter(x=>x.trip_id===trip_id);
+  const content=st.map(s=>{
+    const stop=stops[s.stop_id];
+    return `${stop?stop.stop_name:"?"} ${s.departure_time||""}`;
+  }).join("<br>");
+  if(current.polyline){
+    const mid=current.polyline.getLatLngs()[Math.floor(current.polyline.getLatLngs().length/2)];
+    L.popup().setLatLng(mid).setContent(`<b>shape_id:${shape_id}</b><br>${content}`).openOn(map);
+  }
+}
+
+// 🚋 出題時アニメーション
+function startAnimation(shape_id){
+  const pts=shapes[shape_id].map(p=>L.latLng(p.lat,p.lng));
+  if(pts.length<2)return;
+  const speed=0.005; // 高速
+  let progress=0;
+  if(movingMarker){ map.removeLayer(movingMarker); movingMarker=null; }
+  movingMarker=L.circleMarker(pts[0],{radius:7,color:"red",fillColor:"orange",fillOpacity:1}).addTo(map);
+
+  function step(){
+    progress+=speed;
+    if(progress>1){ progress=0; } // ループ再生
+    const indexFloat=progress*(pts.length-1);
+    const i=Math.floor(indexFloat);
+    const t=indexFloat-i;
+    if(i<pts.length-1){
+      const p1=pts[i],p2=pts[i+1];
+      const lat=p1.lat+(p2.lat-p1.lat)*t;
+      const lng=p1.lng+(p2.lng-p1.lng)*t;
+      movingMarker.setLatLng([lat,lng]);
+    }
+    animTimer=requestAnimationFrame(step);
+  }
+  step();
+}
+
+nextBtn.onclick=newQuestion;
+revealBtn.onclick=()=>showExplanation(current.shape_id, Array.from(shapeToRoutes[current.shape_id]||[])[0]);
+
+</script>
+</body>
+</html>
