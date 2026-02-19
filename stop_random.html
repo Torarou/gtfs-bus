@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ルーレット抽選</title>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+<style>
+body{
+    font-family: sans-serif;
+    margin:0;
+    padding:20px;
+    background:#f5f5f5;
+}
+
+.container{
+    max-width:900px;
+    margin:auto;
+}
+
+h1{
+    text-align:center;
+}
+
+.filter-box{
+    background:white;
+    padding:15px;
+    border-radius:10px;
+    margin-bottom:20px;
+}
+
+.card{
+    background:white;
+    border-radius:15px;
+    padding:20px;
+    box-shadow:0 4px 12px rgba(0,0,0,0.15);
+    margin-top:20px;
+}
+
+.card h2{
+    font-size:28px;
+    margin-top:0px;
+    margin-bottom:0px;
+}
+
+.sub-info{
+    font-size:14px;
+    color:#555;
+    margin:3px 0;
+}
+
+button{
+    width:100%;
+    padding:15px;
+    font-size:18px;
+    border:none;
+    border-radius:10px;
+    background:#007bff;
+    color:white;
+    cursor:pointer;
+    margin-top:10px;
+}
+
+button:hover{
+    background:#0056b3;
+}
+
+@media (min-width:768px){
+    button{
+        width:auto;
+    }
+}
+.title-row{
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    flex-wrap:wrap;
+    gap:10px;
+}
+
+.title-main{
+    font-size:28px;
+    font-weight:bold;
+    flex:1;
+    min-width:150px;
+}
+
+.title-meta{
+    display:flex;
+    gap:10px;
+    flex-wrap:wrap;
+}
+
+.level-badge{
+    padding:8px 14px;
+    border-radius:12px;
+    font-size:16px;
+    font-weight:bold;
+    background:#e0e0e0;
+}
+
+.category-badge{
+    padding:8px 14px;
+    border-radius:12px;
+    font-size:16px;
+    background:#f3f3f3;
+}
+
+.data-update{
+    padding:8px 14px;
+    text-align: right;
+    border-radius:12px;
+    font-size:12px;
+    background:#f3f3f3;
+}
+
+
+</style>
+</head>
+<body>
+
+<div class="container">
+<h1>市バス バス停ルーレット</h1>
+<div class="data-update">20260126(ver.Kyoto_City_Bus_GTFS_2026_0001_01)</div>
+
+<div class="filter-box">
+
+<label>均一/調整:</label>
+<select id="filterJ">
+<option value="all">すべて</option>
+<option value="0">均一区間内停留所</option>
+<option value="1">調整区間停留所</option>
+</select>
+
+<br><br>
+
+<label>フリー定期券:</label>
+<select id="filterK">
+<option value="all">すべて</option>
+<option value="<=1.5">市内中心フリー</option>
+<option value="<=2.5">市内中心＋桂地域フリー</option>
+<option value="<=3">市内中心＋桂・洛西地域フリー</option>
+<option value="1.5-2.5">桂地域フリー</option>
+<option value=">=1.5">桂・洛西地域フリー</option>
+
+</select>
+
+<br><br>
+
+<label>行政区域(複数選択可):</label>
+<select id="filterL" multiple style="width:100%;height:120px;"></select>
+
+<button onclick="startRoulette()">ルーレット開始</button>
+
+</div>
+
+<div id="result"></div>
+
+</div>
+
+<script>
+
+let allData = [];
+
+fetch("data.csv")
+.then(response => response.text())
+.then(csvText => {
+
+    const parsed = Papa.parse(csvText, {
+        header: true,
+        skipEmptyLines: true
+    });
+
+    allData = parsed.data.map(row => ({
+        B: row["stop_name"]?.trim(),
+        C: row["stop_desc"]?.trim(),
+        D: row["platform_code"]?.trim(),
+        E: row["ja-Hrkt"]?.trim(),
+        F: row["en"]?.trim(),
+        G: row["zh-Hans"]?.trim(),
+        H: row["zh-Hant"]?.trim(),
+        I: row["ko"]?.trim(),
+        J: row["Flat"]?.trim(),
+        K: parseFloat(row["Comm Pass"]),
+        L: row["Ward"]?.trim()
+    }));
+
+    createLFilter();
+});
+
+
+
+function createLFilter(){
+    const select = document.getElementById("filterL");
+    const unique = [...new Set(allData.map(d=>d.L))];
+
+    unique.forEach(val=>{
+        const option = document.createElement("option");
+        option.value = val;
+        option.textContent = val;
+        select.appendChild(option);
+    });
+}
+
+function startRoulette(){
+
+    let filtered = allData.filter(item=>{
+
+        const jValue = document.getElementById("filterJ").value;
+        if(jValue !== "all" && item.J !== jValue) return false;
+
+        const kValue = document.getElementById("filterK").value;
+        if(kValue !== "all"){
+            if(kValue === "<=1.5" && !(item.K <= 1.5)) return false;
+            if(kValue === ">=1.5" && !(item.K >= 1.5)) return false;
+            if(kValue === "1.5-2.5" && !(item.K >=1.5 && item.K <=2.5)) return false;
+            if(kValue === "<=2.5" && !(item.K <=2.5)) return false;
+            if(kValue === "<=3" && !(item.K <=3)) return false;
+        }
+
+        const selected = [...document.getElementById("filterL").selectedOptions].map(o=>o.value);
+        if(selected.length > 0 && !selected.includes(item.L)) return false;
+
+        return true;
+    });
+
+    if(filtered.length === 0){
+        alert("該当データなし");
+        return;
+    }
+
+    const resultDiv = document.getElementById("result");
+
+    let count = 0;
+    let speed = 50;       // 初期スピード（小さいほど速い）
+    let maxCount = 40;    // 回転回数
+
+    const interval = setInterval(()=>{
+
+        const randomItem = filtered[Math.floor(Math.random() * filtered.length)];
+
+        resultDiv.innerHTML = `
+            <div class="card">
+                <h2>${randomItem.B}</h2>
+            </div>
+        `;
+
+        count++;
+
+        // 徐々に減速
+        speed += 10;
+
+        if(count >= maxCount){
+            clearInterval(interval);
+
+            const finalResult = filtered[Math.floor(Math.random() * filtered.length)];
+            const levelText = getLevelLabel(finalResult.J);
+
+            resultDiv.innerHTML = `
+                <div class="card">
+                    <div class="title-row">
+                        <div class="title-main">${finalResult.B}</div>
+                        <div class="title-meta">
+                            <div class="level-badge">${levelText}</div>
+                            <div class="category-badge">${finalResult.L}</div>
+                        </div>
+                    </div>
+                    <hr>
+
+                    <div class="sub-info">${finalResult.C}</div>
+                    <div class="sub-info">${finalResult.D}</div>
+                    <div class="sub-info">${finalResult.E}</div>
+                    <div class="sub-info">${finalResult.F}</div>
+                    <div class="sub-info">${finalResult.G}</div>
+                    <div class="sub-info">${finalResult.H}</div>
+                    <div class="sub-info">${finalResult.I}</div>
+                </div>
+            `;
+
+
+        }
+
+    }, speed);
+}
+
+function getLevelLabel(k){
+
+    if(k == 1) return "調";
+    if(k == 0) return "均";
+    return "？";
+}
+
+
+</script>
+
+</body>
+</html>
